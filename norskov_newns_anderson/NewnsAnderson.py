@@ -26,11 +26,13 @@ class NorskovNewnsAnderson:
     width: list
     eps: list
     eps_a: float
+    # Vsd: list
+    # row: list
     eps_sp_min: float = -15
     eps_sp_max: float = 15
     Delta0_mag: float = 0.0
-    alpha: float = 0.075
     precision: int = 50
+    alpha: float = 0.075
 
     def __post_init__(self):
         """Extra variables that are needed for the model."""
@@ -39,9 +41,42 @@ class NorskovNewnsAnderson:
 
     def fit_parameters(self, args, eps_ds):
         """Fit the parameters alpha, beta"""
-        # Always use the absolute value 
-        Vak = args
-        Vak = np.abs(Vak)
+        if len(eps_ds) == 2 * len(self.width):
+            eps_ds = eps_ds[:len(self.width)]
+            expected_double = True
+        elif len(eps_ds) == len(self.width):
+            expected_double = False
+        else:
+            raise ValueError("eps_ds has wrong length")
+        
+        # beta1, beta2, beta3 = args
+        # # Make everything a positive float
+        # # alpha = abs(float(alpha))
+        # beta1 = abs(float(beta1))
+        # beta2 = abs(float(beta2))
+        # beta3 = abs(float(beta3))
+        # beta = [beta1, beta2, beta3]
+        # beta_list = args
+        # beta_list = np.abs(np.array(beta_list))
+
+        Vak = np.abs(np.array(args))
+        alpha = self.alpha
+        
+        # Vak = np.abs(args)
+        # Generate Vak from the fitted parameters
+        # based on the row of the transition metal
+        # if the row index is 1, multipy by beta1
+        # if the row index is 2, multiply by beta2
+        # if the row index is 3, multiply by beta3
+        # Start by creating a list of the beta values
+        # beta_list = np.empty(len(self.width))
+        # for i in range(len(self.row)):
+        #     beta_list[i] = beta[self.row[i] - 1]
+        # Multipy the beta list with Vsd to get Vak 
+        # Vak = beta_list * self.Vsd
+
+        print("alpha:", alpha)
+        print("Vak:", Vak)
 
         # Store the hybridisation energy for all metals to compare later
         spd_hybridisation_energy = np.zeros(len(eps_ds))
@@ -80,7 +115,7 @@ class NorskovNewnsAnderson:
         self.spd_hybridisation_energy = spd_hybridisation_energy
 
         # orthonogonalisation energy
-        ortho_energy = 2 * ( self.na +  self.filling ) * self.alpha * Vak**2
+        ortho_energy = 2 * ( self.na +  self.filling ) * alpha * Vak**2
         ortho_energy = np.array(ortho_energy)
 
         # Ensure that the orthonogonalisation energy is positive always
@@ -90,12 +125,23 @@ class NorskovNewnsAnderson:
         hybridisation_energy = spd_hybridisation_energy + ortho_energy
 
         # Store the hybridisation energy for all metals
-        self.hybridisation_energy = hybridisation_energy
+        self.hybridisation_energy = hybridisation_energy # + constant_offset
 
         # Store the orthogonalisation energy for all metals
         self.ortho_energy = ortho_energy
 
-        return hybridisation_energy
+        # And also store the Vak for all metals
+        self.Vak = Vak
+
+        if expected_double:
+            return_list = hybridisation_energy.tolist() + self.na.tolist()
+        else:
+            return_list = hybridisation_energy.tolist()
+        
+        print('return_list: ', return_list)
+        print()
+
+        return np.array(return_list)
 
 @dataclass
 class NewnsAndersonNumerical:
@@ -182,6 +228,12 @@ class NewnsAndersonNumerical:
     def get_occupancy(self):
         """Get the occupancy of the single particle state."""
         return float(self.na.real)
+    
+    def get_unbound_occupancy(self):
+        """Get the occupancy of the single particle that is within
+        the metal density of states."""
+        self.calculate_unbound_occupancy()
+        return float(self.unbound_na.real)
     
     def get_dos_on_grid(self):
         """Get the density of states."""
@@ -422,6 +474,17 @@ class NewnsAndersonNumerical:
                                 limit=100)[0]
         return filling_numerator / filling_denominator
 
+    def calculate_unbound_occupancy(self):
+        """Calculate the occupancy of the unbound state that lies
+        within the d-band of the metal."""
+        # Add in the integral for the states within the Delta function
+        lower_integration_bound = float((self.eps_d - self.wd).real)
+        upper_integration_bound = float((self.eps_d + self.wd).real)
+        self.unbound_na = acb.integral(lambda x, _: self.create_dos(x),
+                                            lower_integration_bound,
+                                            upper_integration_bound)
+        if self.verbose:
+            print(f'Single particle occupancy: {self.na}')
     def calculate_occupancy(self):
         """Calculate the density of states from the Newns-Anderson model."""
         # If a dos is required, then switch to arb
@@ -440,12 +503,18 @@ class NewnsAndersonNumerical:
             upper_integration_bound = min(0.0, float((self.eps_d + self.wd).real) )
             self.na = acb.integral(lambda x, _: self.create_dos(x),
                                                 lower_integration_bound,
-                                                upper_integration_bound)
+                                                upper_integration_bound,
+            )
             self.na += localised_occupancy
         else:
             self._convert_to_acb()
             # Numerically integrate the dos to find the occupancy
-            self.na = acb.integral(lambda x, _: self.create_dos(x), self.eps_min, arb('0.0'))
+            # This operation requires a slightly reduced tolerance
+            # to avoid the integration to give out nan
+            # TODO: Provide a user option for this
+            self.na = acb.integral(lambda x, _: self.create_dos(x),
+                                   self.eps_min, arb('0.0'),
+                                   rel_tol=pow(2, -self.precision/5))
         if self.verbose:
             print(f'Single particle occupancy: {self.na}')
 
